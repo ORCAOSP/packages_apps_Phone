@@ -36,6 +36,8 @@ import android.os.Handler;
 import android.os.Message;
 import android.os.RemoteException;
 import android.os.SystemProperties;
+import android.preference.PreferenceManager;
+import android.provider.ContactsContract;
 import android.provider.Settings;
 import android.telephony.PhoneNumberUtils;
 import android.text.TextUtils;
@@ -67,7 +69,6 @@ import java.util.Hashtable;
 import java.util.Iterator;
 import java.util.List;
 
-import android.preference.PreferenceManager;
 /**
  * Misc utilities for the Phone app.
  */
@@ -223,8 +224,8 @@ public class PhoneUtils {
         final CallNotifier notifier = app.notifier;
 
         // If the ringer is currently ringing and/or vibrating, stop it
-        // right now and prevent new rings (before actually answering the call)
-        app.notifier.silenceRinger();
+        // right now (before actually answering the call.)
+        notifier.silenceRinger();
 
         final Phone phone = ringingCall.getPhone();
         final boolean phoneIsCdma = (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA);
@@ -390,9 +391,9 @@ public class PhoneUtils {
     }
 
     static class PhoneSettings {
-        static boolean vibOn60Secs(Context context) {
+        static boolean vibOn45Secs(Context context) {
             return PreferenceManager.getDefaultSharedPreferences(context)
-                      .getBoolean("button_vibrate_60", false);
+                      .getBoolean("button_vibrate_45", false);
         }
         static boolean vibHangup(Context context) {
             return PreferenceManager.getDefaultSharedPreferences(context)
@@ -405,6 +406,23 @@ public class PhoneUtils {
         static boolean vibCallWaiting(Context context) {
             return PreferenceManager.getDefaultSharedPreferences(context)
                       .getBoolean("button_vibrate_call_waiting", false);
+        }
+        static boolean showInCallEvents(Context context) {
+            return PreferenceManager.getDefaultSharedPreferences(context)
+                      .getBoolean("button_show_ssn_key", false);
+        }
+        static boolean showCallLogAfterCall(Context context) {
+            return PreferenceManager.getDefaultSharedPreferences(context)
+                      .getBoolean("button_calllog_after_call", true);
+        }
+        static int flipAction(Context context) {
+            String s = PreferenceManager.getDefaultSharedPreferences(context)
+                      .getString("flip_action", "0");
+            return Integer.parseInt(s);
+        }
+        static boolean rejectedAsMissed(Context context) {
+            return PreferenceManager.getDefaultSharedPreferences(context)
+                      .getBoolean("button_rejected_as_missed", false);
         }
     }
 
@@ -1896,6 +1914,7 @@ public class PhoneUtils {
 
         String aParam = context.getResources().getString(R.string.in_call_noise_suppression_audioparameter);
         String[] aPValues = aParam.split("=");
+
         if(aPValues[0].length() == 0) {
             aPValues[0] = "noise_suppression";
         }
@@ -2517,6 +2536,15 @@ public class PhoneUtils {
             if (phone != null) return phone;
         }
         return cm.getDefaultPhone();
+    }
+
+    public static Phone getGsmPhone(CallManager cm) {
+        for (Phone phone: cm.getAllPhones()) {
+            if (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM) {
+                return phone;
+            }
+        }
+        return null;
     }
 
     public static Phone getSipPhoneFromUri(CallManager cm, String target) {

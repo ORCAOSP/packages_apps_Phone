@@ -33,10 +33,13 @@ import android.content.DialogInterface;
 import android.content.DialogInterface.OnCancelListener;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Typeface;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.media.AudioManager;
 import android.os.AsyncResult;
 import android.os.Bundle;
@@ -71,12 +74,10 @@ import com.android.internal.telephony.MmiCode;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.TelephonyCapabilities;
+import com.android.internal.telephony.gsm.SuppServiceNotification;
 import com.android.phone.Constants.CallStatusCode;
 import com.android.phone.InCallUiState.InCallScreenMode;
 import com.android.phone.OtaUtils.CdmaOtaScreenState;
-
-import android.preference.PreferenceManager;
-import android.content.SharedPreferences;
 
 import java.util.List;
 
@@ -124,9 +125,6 @@ public class InCallScreen extends Activity
     /* package */ static final String EXTRA_GATEWAY_URI =
             "com.android.phone.extra.GATEWAY_URI";
 
-    private static final String BUTTON_EXIT_TO_HOMESCREEN_KEY = "button_exit_to_home_screen_key";
-    private static final String BUTTON_LANDSCAPE_KEY = "button_landscape_key";
-
     // Amount of time (in msec) that we display the "Call ended" state.
     // The "short" value is for calls ended by the local user, and the
     // "long" value is for calls ended by the remote caller.
@@ -169,12 +167,97 @@ public class InCallScreen extends Activity
     private static final int REQUEST_UPDATE_SCREEN = 122;
     private static final int PHONE_INCOMING_RING = 123;
     private static final int PHONE_NEW_RINGING_CONNECTION = 124;
+    private static final int SUPP_SERVICE_NOTIFY = 125;
 
     // When InCallScreenMode is UNDEFINED set the default action
     // to ACTION_UNDEFINED so if we are resumed the activity will
     // know its undefined. In particular checkIsOtaCall will return
     // false.
     public static final String ACTION_UNDEFINED = "com.android.phone.InCallScreen.UNDEFINED";
+
+    // Flip action IDs
+    private static final int RINGING_NO_ACTION = 0;
+    private static final int MUTE_RINGER = 1;
+    private static final int DISMISS_CALL = 2;
+
+    private interface ResettableSensorEventListener extends SensorEventListener {
+        public void reset();
+    }
+
+    private int mFlipAction;
+
+    private final ResettableSensorEventListener mFlipListener = new ResettableSensorEventListener() {
+        // Our accelerometers are not quite accurate.
+        private static final int FACE_UP_GRAVITY_THRESHOLD = 7;
+        private static final int FACE_DOWN_GRAVITY_THRESHOLD = -7;
+        private static final int TILT_THRESHOLD = 3;
+        private static final int SENSOR_SAMPLES = 3;
+        private static final int MIN_ACCEPT_COUNT = SENSOR_SAMPLES - 1;
+
+        private boolean mStopped;
+        private boolean mWasFaceUp;
+        private boolean[] mSamples = new boolean[SENSOR_SAMPLES];
+        private int mSampleIndex;
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int acc) {
+        }
+
+        @Override
+        public void reset() {
+            mWasFaceUp = false;
+            mStopped = false;
+            for (int i = 0; i < SENSOR_SAMPLES; i++) {
+                mSamples[i] = false;
+            }
+        }
+
+        private boolean filterSamples() {
+            int trues = 0;
+            for (boolean sample : mSamples) {
+                if(sample) {
+                    ++trues;
+                }
+            }
+            return trues >= MIN_ACCEPT_COUNT;
+        }
+
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            // Add a sample overwriting the oldest one. Several samples
+            // are used to avoid the erroneous values the sensor sometimes
+            // returns.
+            float z = event.values[2];
+
+            if (mStopped) {
+                return;
+            }
+
+            if (!mWasFaceUp) {
+                // Check if its face up enough.
+                mSamples[mSampleIndex] = z > FACE_UP_GRAVITY_THRESHOLD;
+
+                // face up
+                if (filterSamples()) {
+                    mWasFaceUp = true;
+                    for (int i = 0; i < SENSOR_SAMPLES; i++) {
+                        mSamples[i] = false;
+                    }
+                }
+            } else {
+                // Check if its face down enough.
+                mSamples[mSampleIndex] = z < FACE_DOWN_GRAVITY_THRESHOLD;
+
+                // face down
+                if (filterSamples()) {
+                    mStopped = true;
+                    handleAction(mFlipAction);
+                }
+            }
+
+            mSampleIndex = ((mSampleIndex + 1) % SENSOR_SAMPLES);
+        }
+    };
 
     /** Status codes returned from syncWithPhoneState(). */
     private enum SyncWithPhoneStateStatus {
@@ -251,9 +334,6 @@ public class InCallScreen extends Activity
     private boolean mIsForegroundActivityForProximity = false;
     private PowerManager mPowerManager;
 
-    public boolean Exit_To_Home_Screen = false;
-    private boolean Enable_Landscape_In_Call = false;
-
     // For use with Pause/Wait dialogs
     private String mPostDialStrAfterPause;
     private boolean mPauseInProgress = false;
@@ -291,6 +371,10 @@ public class InCallScreen extends Activity
             switch (msg.what) {
                 case SUPP_SERVICE_FAILED:
                     onSuppServiceFailed((AsyncResult) msg.obj);
+                    break;
+
+                case SUPP_SERVICE_NOTIFY:
+                    onSuppServiceNotification((AsyncResult) msg.obj);
                     break;
 
                 case PHONE_STATE_CHANGED:
@@ -460,8 +544,6 @@ public class InCallScreen extends Activity
             return;
         }
 
-        updateSettings();
-
         mApp = PhoneGlobals.getInstance();
         mApp.setInCallScreenInstance(this);
 
@@ -562,13 +644,8 @@ public class InCallScreen extends Activity
         if (DBG) log("onResume()...");
         super.onResume();
 
-        updateSettings();
+        mFlipAction = PhoneUtils.PhoneSettings.flipAction(this);
 
-        if (Enable_Landscape_In_Call) {
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-        } else {
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_NOSENSOR);
-        }
         mIsForegroundActivity = true;
         mIsForegroundActivityForProximity = true;
 
@@ -792,6 +869,7 @@ public class InCallScreen extends Activity
     protected void onPause() {
         if (DBG) log("onPause()...");
         super.onPause();
+        detachListeners();
 
         if (mPowerManager.isScreenOn()) {
             // Set to false when the screen went background *not* by screen turned off. Probably
@@ -974,6 +1052,45 @@ public class InCallScreen extends Activity
         }
     }
 
+    private void attachListeners() {
+        final SensorManager sm = getSensorManager();
+
+        if (mFlipAction != RINGING_NO_ACTION) {
+            mFlipListener.reset();
+            sm.registerListener(mFlipListener,
+                sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER),
+                SensorManager.SENSOR_DELAY_NORMAL);
+        }
+    }
+
+    private SensorManager getSensorManager() {
+        return (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+    }
+
+    private void detachListeners() {
+        final SensorManager sm = getSensorManager();
+
+        if (mFlipAction != RINGING_NO_ACTION) {
+            sm.unregisterListener(mFlipListener);
+        }
+    }
+
+    private void handleAction(int action) {
+        switch(action) {
+            case MUTE_RINGER:
+                internalSilenceRinger();
+                break;
+            case DISMISS_CALL:
+                internalHangup();
+                break;
+            case RINGING_NO_ACTION:
+            default:
+                //no action
+                break;
+        }
+        detachListeners();
+    }
+
     /**
      * Dismisses the in-call screen.
      *
@@ -1075,6 +1192,7 @@ public class InCallScreen extends Activity
             mCM.registerForSuppServiceFailed(mHandler, SUPP_SERVICE_FAILED, null);
             mCM.registerForIncomingRing(mHandler, PHONE_INCOMING_RING, null);
             mCM.registerForNewRingingConnection(mHandler, PHONE_NEW_RINGING_CONNECTION, null);
+            mCM.registerForSuppServiceNotification(mHandler, SUPP_SERVICE_NOTIFY, null);
             mRegisteredForPhoneStates = true;
         }
     }
@@ -1089,6 +1207,7 @@ public class InCallScreen extends Activity
         mCM.unregisterForSuppServiceFailed(mHandler);
         mCM.unregisterForIncomingRing(mHandler);
         mCM.unregisterForNewRingingConnection(mHandler);
+        mCM.unregisterForSuppServiceNotification(mHandler);
         mRegisteredForPhoneStates = false;
     }
 
@@ -1632,6 +1751,18 @@ public class InCallScreen extends Activity
         mSuppServiceFailureDialog.show();
     }
 
+    private void onSuppServiceNotification(AsyncResult r) {
+        SuppServiceNotification notification = (SuppServiceNotification) r.result;
+
+        if (notification.notificationType == SuppServiceNotification.NOTIFICATION_TYPE_MT) {
+            if (notification.code == SuppServiceNotification.MT_CODE_ADDITIONAL_CALL_FORWARDED) {
+                if (!PhoneUtils.getCurrentCall(mPhone).isIdle()) {
+                    mApp.inCallUiState.needToShowAdditionalCallForwardedDialog = true;
+                }
+            }
+        }
+    }
+
     /**
      * Something has changed in the phone's state.  Update the UI.
      */
@@ -1718,7 +1849,12 @@ public class InCallScreen extends Activity
         // Under certain call disconnected states, we want to alert the user
         // with a dialog instead of going through the normal disconnect
         // routine.
-        if (cause == Connection.DisconnectCause.CALL_BARRED) {
+        if (cause == Connection.DisconnectCause.INCOMING_MISSED) {
+            if (mApp.inCallUiState.needToShowAdditionalCallForwardedDialog) {
+                showGenericErrorDialog(R.string.callUnanswered_forwarded, false);
+                mApp.inCallUiState.needToShowAdditionalCallForwardedDialog = false;
+            }
+        } else if (cause == Connection.DisconnectCause.CALL_BARRED) {
             showGenericErrorDialog(R.string.callFailed_cb_enabled, false);
             return;
         } else if (cause == Connection.DisconnectCause.FDN_BLOCKED) {
@@ -2214,8 +2350,7 @@ public class InCallScreen extends Activity
 
     private View createWildPromptView() {
         LinearLayout result = new LinearLayout(this);
-        //result.setOrientation(LinearLayout.VERTICAL);
-        // Let the Manfiest determine Layout.
+        result.setOrientation(LinearLayout.VERTICAL);
         result.setPadding(5, 5, 5, 5);
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -2376,6 +2511,8 @@ public class InCallScreen extends Activity
         // closed.  (We do this to make sure we're not covering up the
         // "incoming call" UI.)
         if (mCM.getState() == PhoneConstants.State.RINGING) {
+            //If we're ringing, attach flip listener
+            attachListeners();
             if (mDialer.isOpened()) {
               Log.i(LOG_TAG, "During RINGING state we force hiding dialpad.");
               closeDialpadInternal(false);  // don't do the "closing" animation
@@ -2655,6 +2792,7 @@ public class InCallScreen extends Activity
 
                 if ((mLastDisconnectCause != Connection.DisconnectCause.INCOMING_MISSED)
                         && (mLastDisconnectCause != Connection.DisconnectCause.INCOMING_REJECTED)
+                        && PhoneUtils.PhoneSettings.showCallLogAfterCall(this)
                         && !isPhoneStateRestricted()
                         && PhoneGlobals.sVoiceCapable) {
                     final Intent intent = mApp.createPhoneEndIntentUsingCallOrigin();
@@ -2664,8 +2802,7 @@ public class InCallScreen extends Activity
                         log("- Show Call Log (or Dialtacts) after disconnect. Current intent: "
                                 + intent);
                     }
-                    if (!Exit_To_Home_Screen)
-                      try {
+                    try {
                         startActivity(intent, opts.toBundle());
                     } catch (ActivityNotFoundException e) {
                         // Don't crash if there's somehow no "Call log" at
@@ -2683,8 +2820,8 @@ public class InCallScreen extends Activity
                     // stay in the activity history.
                 }
 
-                endInCallScreenSession();
             }
+            endInCallScreenSession();
 
             // Reset the call origin when the session ends and this in-call UI is being finished.
             mApp.setLatestActiveCallOrigin(null);
@@ -3472,6 +3609,7 @@ public class InCallScreen extends Activity
         final boolean hasRingingCall = mCM.hasActiveRingingCall();
 
         if (hasRingingCall) {
+            detachListeners();
             Phone phone = mCM.getRingingPhone();
             Call ringing = mCM.getFirstActiveRingingCall();
             int phoneType = phone.getPhoneType();
@@ -4610,14 +4748,6 @@ public class InCallScreen extends Activity
     private void log(String msg) {
         Log.d(LOG_TAG, msg);
     }
-
-    protected void updateSettings() {
-       SharedPreferences callsettings = PreferenceManager.getDefaultSharedPreferences(this);
-
-       Exit_To_Home_Screen = (callsettings.getBoolean(BUTTON_EXIT_TO_HOMESCREEN_KEY,false));
-       Enable_Landscape_In_Call = callsettings.getBoolean(BUTTON_LANDSCAPE_KEY,false);
-
-      }
 
     /**
      * Requests to remove provider info frame after having
