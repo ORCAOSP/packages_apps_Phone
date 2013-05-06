@@ -98,18 +98,15 @@
         <item>@null</item>
     </array>
 
+    <!-- Summary texts for Voice Quality. -->
     <string-array translatable="false" name="voice_quality_entries">
-        <item>@string/voice_quality_entry_normal</item>
-        <item>@string/voice_quality_entry_clear</item>
-        <item>@string/voice_quality_entry_crisp</item>
-        <item>@string/voice_quality_entry_bright</item>
+        <!-- Overlay appropriately, using string constants as above. E.g.:
+        <item>@string/voice_quality_normal</item>
+        <item>@string/voice_quality_clear</item>  -->
     </string-array>
-
+    <!-- Voice Quality values passed to AudioSystem. DO NOT TRANSLATE. -->
     <string-array translatable="false" name="voice_quality_values">
-        <item>0</item>
-        <item>1</item>
-        <item>2</item>
-        <item>3</item>
+        <!-- Overlay appropriately -->
     </string-array>
 
 </resources>

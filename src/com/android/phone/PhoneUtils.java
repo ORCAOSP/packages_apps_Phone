@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2006 The Android Open Source Project
+ * Blacklist - Copyright (C) 2013 The CyanogenMod Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +25,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
@@ -36,6 +38,8 @@ import android.os.Handler;
 import android.os.Message;
 import android.os.RemoteException;
 import android.os.SystemProperties;
+import android.preference.PreferenceManager;
+import android.provider.ContactsContract;
 import android.provider.Settings;
 import android.telephony.PhoneNumberUtils;
 import android.text.TextUtils;
@@ -67,7 +71,6 @@ import java.util.Hashtable;
 import java.util.Iterator;
 import java.util.List;
 
-import android.preference.PreferenceManager;
 /**
  * Misc utilities for the Phone app.
  */
@@ -95,6 +98,10 @@ public class PhoneUtils {
     static final int AUDIO_IDLE = 0;  /** audio behaviour at phone idle */
     static final int AUDIO_RINGING = 1;  /** audio behaviour while ringing */
     static final int AUDIO_OFFHOOK = 2;  /** audio behaviour while in call. */
+
+    // USSD string length for MMI operations
+    static final int MIN_USSD_LEN = 1;
+    static final int MAX_USSD_LEN = 160;
 
     /** Speaker state, persisting between wired headset connection events */
     private static boolean sIsSpeakerEnabled = false;
@@ -223,8 +230,8 @@ public class PhoneUtils {
         final CallNotifier notifier = app.notifier;
 
         // If the ringer is currently ringing and/or vibrating, stop it
-        // right now and prevent new rings (before actually answering the call)
-        app.notifier.silenceRinger();
+        // right now (before actually answering the call.)
+        notifier.silenceRinger();
 
         final Phone phone = ringingCall.getPhone();
         final boolean phoneIsCdma = (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA);
@@ -390,50 +397,78 @@ public class PhoneUtils {
     }
 
     static class PhoneSettings {
-        static boolean vibOn60Secs(Context context) {
-            return PreferenceManager.getDefaultSharedPreferences(context)
-                      .getBoolean("button_vibrate_60", false);
+        /* vibration preferences */
+        static boolean vibOn45Secs(Context context) {
+            return getPrefs(context).getBoolean("button_vibrate_45", false);
         }
         static boolean vibHangup(Context context) {
-            return PreferenceManager.getDefaultSharedPreferences(context)
-                      .getBoolean("button_vibrate_hangup", false);
+            return getPrefs(context).getBoolean("button_vibrate_hangup", false);
         }
         static boolean vibOutgoing(Context context) {
-            return PreferenceManager.getDefaultSharedPreferences(context)
-                      .getBoolean("button_vibrate_outgoing", false);
+            return getPrefs(context).getBoolean("button_vibrate_outgoing", false);
         }
         static boolean vibCallWaiting(Context context) {
-            return PreferenceManager.getDefaultSharedPreferences(context)
-                      .getBoolean("button_vibrate_call_waiting", false);
+            return getPrefs(context).getBoolean("button_vibrate_call_waiting", false);
         }
 
-        /* Voice quality filter */
+        /* misc. UI and behaviour preferences */
+        static boolean showInCallEvents(Context context) {
+            return getPrefs(context).getBoolean("button_show_ssn_key", false);
+        }
+        static boolean showCallLogAfterCall(Context context) {
+            return getPrefs(context).getBoolean("button_calllog_after_call", true);
+        }
+        static int flipAction(Context context) {
+            String s = getPrefs(context).getString("flip_action", "0");
+            return Integer.parseInt(s);
+        }
+        static boolean rejectedAsMissed(Context context) {
+            return getPrefs(context).getBoolean("button_rejected_as_missed", false);
+        }
+        /* blacklist handling */
+        static boolean isBlacklistEnabled(Context context) {
+            return getPrefs(context).getBoolean("button_enable_blacklist", false);
+        }
+        static boolean isBlacklistNotifyEnabled(Context context) {
+            return getPrefs(context).getBoolean("button_nofify", false);
+        }
+        static boolean isBlacklistPrivateNumberEnabled(Context context) {
+            return getPrefs(context).getBoolean("button_blacklist_private_numbers", false);
+        }
+        static boolean isBlacklistUnknownNumberEnabled(Context context) {
+            return getPrefs(context).getBoolean("button_blacklist_unknown_numbers", false);
+        }
+        static boolean isBlacklistRegexEnabled(Context context) {
+            return getPrefs(context).getBoolean("button_blacklist_regex", false);
+        }
+        private static SharedPreferences getPrefs(Context context) {
+            return PreferenceManager.getDefaultSharedPreferences(context);
+        }
+
+        /* voice quality preferences */
         static String getVoiceQualityParameter(Context context) {
             String param = context.getResources().getString(R.string.voice_quality_param);
             if (TextUtils.isEmpty(param)) {
                 return null;
             }
-
-            int conf = getVoiceQualityValue(context);
-            String value = null;
-            if (conf <= -1) {
+            String value = getVoiceQualityValue(context);
+            if (value == null) {
                 return null;
-            } else if (conf == 0) {
-                value = "Normal";
-            } else if (conf == 1) {
-                value = "Clear";
-            } else if (conf == 2) {
-                value = "Crisp";
-            } else if (conf == 3) {
-                value = "Bright";
             }
-
             return param + "=" + value;
         }
-        static int getVoiceQualityValue(Context context) {
-            String conf = PreferenceManager.getDefaultSharedPreferences(context)
-                    .getString("button_voice_quality_key", "0");
-            return Integer.parseInt(conf);
+        static String getVoiceQualityValue(Context context) {
+            String value = getPrefs(context).getString(
+                    CallFeaturesSetting.BUTTON_VOICE_QUALITY_KEY, null);
+            if (value != null) {
+                return value;
+            }
+            /* use first value of entry list */
+            String[] values = context.getResources().getStringArray(R.array.voice_quality_values);
+            if (values.length > 0) {
+                return values[0];
+            }
+            return null;
         }
     }
 
@@ -1152,7 +1187,21 @@ public class PhoneUtils {
                         public void onClick(DialogInterface dialog, int whichButton) {
                             switch (whichButton) {
                                 case DialogInterface.BUTTON_POSITIVE:
-                                    phone.sendUssdResponse(inputText.getText().toString());
+                                    // As per spec 24.080, valid length of ussd string
+                                    // is 1 - 160. If length is out of the range then
+                                    // display toast message & Cancel MMI operation.
+                                    if (inputText.length() < MIN_USSD_LEN
+                                            || inputText.length() > MAX_USSD_LEN) {
+                                        Toast.makeText(app,
+                                                app.getResources().getString(R.string.enter_input,
+                                                MIN_USSD_LEN, MAX_USSD_LEN),
+                                                Toast.LENGTH_LONG).show();
+                                        if (mmiCode.isCancelable()) {
+                                            mmiCode.cancel();
+                                        }
+                                    } else {
+                                        phone.sendUssdResponse(inputText.getText().toString());
+                                    }
                                     break;
                                 case DialogInterface.BUTTON_NEGATIVE:
                                     if (mmiCode.isCancelable()) {
@@ -1650,7 +1699,11 @@ public class PhoneUtils {
             // return it to the user.
 
             cit = new CallerInfoToken();
-            cit.currentInfo = (CallerInfo) userDataObject;
+            if (userDataObject instanceof String) { // only blacklist will cause this, so just ignore this.
+                cit.currentInfo = new CallerInfo();
+            } else {
+                cit.currentInfo = (CallerInfo) userDataObject;
+            }
             cit.asyncQuery = null;
             cit.isFinal = true;
             // since the query is already done, call the listener.
@@ -1925,6 +1978,7 @@ public class PhoneUtils {
 
         String aParam = context.getResources().getString(R.string.in_call_noise_suppression_audioparameter);
         String[] aPValues = aParam.split("=");
+
         if(aPValues[0].length() == 0) {
             aPValues[0] = "noise_suppression";
         }
@@ -2546,6 +2600,15 @@ public class PhoneUtils {
             if (phone != null) return phone;
         }
         return cm.getDefaultPhone();
+    }
+
+    public static Phone getGsmPhone(CallManager cm) {
+        for (Phone phone: cm.getAllPhones()) {
+            if (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM) {
+                return phone;
+            }
+        }
+        return null;
     }
 
     public static Phone getSipPhoneFromUri(CallManager cm, String target) {

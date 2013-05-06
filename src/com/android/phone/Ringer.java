@@ -21,7 +21,6 @@ import android.content.Context;
 import android.media.AudioManager;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
-import android.media.VibrationPattern;
 import android.net.Uri;
 import android.provider.Settings;
 import android.os.Handler;
@@ -36,8 +35,6 @@ import android.os.SystemVibrator;
 import android.os.Vibrator;
 import android.provider.Settings;
 import android.util.Log;
-
-import java.util.Calendar;
 
 import com.android.internal.telephony.Phone;
 /**
@@ -60,10 +57,8 @@ public class Ringer {
 
     // Uri for the ringtone.
     Uri mCustomRingtoneUri = Settings.System.DEFAULT_RINGTONE_URI;
-    Uri mCustomVibrationUri = Settings.System.DEFAULT_VIBRATION_URI;
 
     Ringtone mRingtone;
-    VibrationPattern mVibrationPattern;
     Vibrator mVibrator;
     AudioManager mAudioManager;
     IPowerManager mPowerManager;
@@ -172,19 +167,14 @@ public class Ringer {
             }
 
             if (shouldVibrate() && mVibratorThread == null) {
-                mVibrationPattern = new VibrationPattern(mCustomVibrationUri, mContext);
-                if (mVibrationPattern.getPattern() == null) {
-                    mVibrationPattern = VibrationPattern.getFallbackVibration(mContext);
-                }
                 mContinueVibrating = true;
                 mVibratorThread = new VibratorThread();
                 if (DBG) log("- starting vibrator...");
                 mVibratorThread.start();
             }
-            AudioManager audioManager =
-                    (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
+
             int ringerVolume = mAudioManager.getStreamVolume(AudioManager.STREAM_RING);
-            if (ringerVolume == 0 && mRingerVolumeSetting <= 0 || inQuietHours()) {
+            if (ringerVolume == 0 && mRingerVolumeSetting <= 0) {
                 if (DBG) log("skipping ring because volume is zero");
                 PhoneUtils.setAudioMode();
                 return;
@@ -197,22 +187,25 @@ public class Ringer {
                         Settings.System.INCREASING_RING, 0) == 1;
                 int minVolume = Settings.System.getInt(cr,
                         Settings.System.INCREASING_RING_MIN_VOLUME, 1);
+
                 if (increasing && minVolume < ringerVolume) {
                     mRingIncreaseInterval = Settings.System.getInt(cr,
                             Settings.System.INCREASING_RING_INTERVAL, 0);
+
                     mRingerVolumeSetting = ringerVolume;
                     mAudioManager.setStreamVolume(AudioManager.STREAM_RING, minVolume, 0);
                     if (DBG) {
                         log("increasing ring is enabled, starting at " +
-                                  minVolume + "/" + ringerVolume);
+                                minVolume + "/" + ringerVolume);
                     }
                     if (mRingIncreaseInterval > 0) {
                         mHandler.sendEmptyMessageDelayed(
-                                  INCREASE_RING_VOLUME, mRingIncreaseInterval);
+                                INCREASE_RING_VOLUME, mRingIncreaseInterval);
                     }
                 } else {
                     mRingerVolumeSetting = -1;
                 }
+
                 mFirstRingEventTime = SystemClock.elapsedRealtime();
                 mRingHandler.sendEmptyMessage(PLAY_RING_ONCE);
             } else {
@@ -241,8 +234,7 @@ public class Ringer {
     }
 
     boolean shouldVibrate() {
-        AudioManager audioManager = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
-        int ringerMode = audioManager.getRingerMode();
+        int ringerMode = mAudioManager.getRingerMode();
         if (CallFeaturesSetting.getVibrateWhenRinging(mContext)) {
             return ringerMode != AudioManager.RINGER_MODE_SILENT;
         } else {
@@ -263,6 +255,7 @@ public class Ringer {
             } catch (RemoteException ex) {
                 // the other end of this binder call is in the system process.
             }
+
             if (mHandler != null) {
                 mHandler.removeCallbacksAndMessages(null);
                 mHandler = null;
@@ -290,7 +283,6 @@ public class Ringer {
 
             if (mVibratorThread != null) {
                 if (DBG) log("- stopRing: cleaning up vibrator thread...");
-                mVibrationPattern.stop();
                 mContinueVibrating = false;
                 mVibratorThread = null;
             }
@@ -302,8 +294,8 @@ public class Ringer {
     private class VibratorThread extends Thread {
         public void run() {
             while (mContinueVibrating) {
-                mVibrationPattern.play();
-                SystemClock.sleep(mVibrationPattern.getLength() + PAUSE_LENGTH);
+                mVibrator.vibrate(VIBRATE_LENGTH);
+                SystemClock.sleep(VIBRATE_LENGTH + PAUSE_LENGTH);
             }
         }
     }
@@ -353,16 +345,6 @@ public class Ringer {
         }
     }
 
-    /**
-     * Sets the vibration uri in preparation for vibrating.
-     * This uri is defaulted to the phone-wide default vibration.
-     */
-    void setCustomVibrationUri (Uri uri) {
-        if (uri != null) {
-            mCustomVibrationUri = uri;
-        }
-    }
-
     private void makeLooper() {
         if (mHandler == null) {
             mHandler = new Handler() {
@@ -387,6 +369,7 @@ public class Ringer {
                 }
             };
         }
+
         if (mRingThread == null) {
             mRingThread = new Worker("ringer");
             mRingHandler = new Handler(mRingThread.getLooper()) {
@@ -435,28 +418,5 @@ public class Ringer {
 
     private static void log(String msg) {
         Log.d(LOG_TAG, msg);
-    }
-
-    private boolean inQuietHours() {
-        boolean quietHoursEnabled = Settings.System.getInt(mContext.getContentResolver(),
-                Settings.System.QUIET_HOURS_ENABLED, 0) != 0;
-        int quietHoursStart = Settings.System.getInt(mContext.getContentResolver(),
-                Settings.System.QUIET_HOURS_START, 0);
-        int quietHoursEnd = Settings.System.getInt(mContext.getContentResolver(),
-                Settings.System.QUIET_HOURS_END, 0);
-        boolean quietHoursRinger = Settings.System.getInt(mContext.getContentResolver(),
-                Settings.System.QUIET_HOURS_RINGER, 0) != 0;
-        if (quietHoursEnabled && quietHoursRinger && (quietHoursStart != quietHoursEnd)) {
-            // Get the date in "quiet hours" format.
-            Calendar calendar = Calendar.getInstance();
-            int minutes = calendar.get(Calendar.HOUR_OF_DAY) * 60 + calendar.get(Calendar.MINUTE);
-            if (quietHoursEnd < quietHoursStart) {
-                // Starts at night, ends in the morning.
-                return (minutes > quietHoursStart) || (minutes < quietHoursEnd);
-            } else {
-                return (minutes > quietHoursStart) && (minutes < quietHoursEnd);
-            }
-        }
-        return false;
     }
 }
