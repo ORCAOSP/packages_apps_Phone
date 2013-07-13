@@ -97,7 +97,6 @@
             android:title="@string/vibrate_45"
             android:persistent="true"
             android:summary="@string/vibrate_45_sum" />
-
     </PreferenceCategory>
 
   <PreferenceCategory
