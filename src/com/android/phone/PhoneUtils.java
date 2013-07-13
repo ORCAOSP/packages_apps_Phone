@@ -424,16 +424,16 @@ public class PhoneUtils {
         }
         static boolean transparentInCallWidget(Context context) {
             return getPrefs(context).getBoolean("transparent_in_call_widget", false);
-        }        
+        }
         static boolean rejectedAsMissed(Context context) {
             return getPrefs(context).getBoolean("button_rejected_as_missed", false);
         }
         /* blacklist handling */
         static boolean isBlacklistEnabled(Context context) {
-            return getPrefs(context).getBoolean("button_enable_blacklist", false);
+            return getPrefs(context).getBoolean("button_enable_blacklist", true);
         }
         static boolean isBlacklistNotifyEnabled(Context context) {
-            return getPrefs(context).getBoolean("button_nofify", false);
+            return getPrefs(context).getBoolean("button_nofify", true);
         }
         static boolean isBlacklistPrivateNumberEnabled(Context context) {
             return getPrefs(context).getBoolean("button_blacklist_private_numbers", false);
