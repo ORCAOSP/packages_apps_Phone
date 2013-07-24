@@ -178,6 +178,8 @@ public class NotificationMgr implements CallerInfoAsyncQuery.OnQueryCompleteList
     private static final int CALL_LOG_TOKEN = -1;
     private static final int CONTACT_TOKEN = -2;
 
+    private static boolean mWasScreenOn = false;
+
     /**
      * Private constructor (this is a singleton).
      * @see init()
@@ -215,6 +217,10 @@ public class NotificationMgr implements CallerInfoAsyncQuery.OnQueryCompleteList
             }
             return sInstance;
         }
+    }
+
+    static void setScreenStateAtIncomingCall(boolean isScreenOn) {
+        mWasScreenOn = isScreenOn;
     }
 
     /**
@@ -603,7 +609,6 @@ public class NotificationMgr implements CallerInfoAsyncQuery.OnQueryCompleteList
                 .setDeleteIntent(createClearMissedCallsIntent());
            } else {
              builder.setSmallIcon(android.R.drawable.stat_notify_missed_call)
-                .setNumber(mMissedCalls.size())
                 .setTicker(mContext.getString(R.string.notification_missedCallTicker, callName))
                 .setWhen(date)
                 .setContentIntent(PendingIntent.getActivity(mContext, 0, callLogIntent, 0))
@@ -1272,8 +1277,14 @@ public class NotificationMgr implements CallerInfoAsyncQuery.OnQueryCompleteList
                 // to the status bar).  Setting fullScreenIntent will cause
                 // the InCallScreen to be launched immediately *unless* the
                 // current foreground activity is marked as "immersive".
-                if (DBG) log("- Setting fullScreenIntent: " + inCallPendingIntent);
-                builder.setFullScreenIntent(inCallPendingIntent, true);
+
+                //override the fullScreenIntent if required by settings
+                if (PhoneUtils.PhoneSettings.backgroundInCallScreen(mContext) && mWasScreenOn) {
+                    if (DBG) log("overriding allowFullScreenIntent due user setting...");
+                } else {
+                    if (DBG) log("- Setting fullScreenIntent: " + inCallPendingIntent);
+                    builder.setFullScreenIntent(inCallPendingIntent, true);
+                }
 
                 // Ugly hack alert:
                 //
